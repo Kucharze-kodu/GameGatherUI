@@ -1,0 +1,78 @@
+<div class="min-h-screen flex items-center justify-center bg-gray-900 text-white">
+  <div class="bg-gray-800 p-12 rounded-lg shadow-2xl w-full max-w-3xl">
+    <h2 class="text-3xl font-bold mb-8 text-center">Register</h2>
+    <form>
+      <div class="mb-6 flex space-x-4">
+        <div class="w-1/2">
+          <label for="firstName" class="block text-lg font-medium mb-3">First Name</label>
+          <input
+            type="text"
+            id="firstName"
+            class="w-full px-5 py-3 rounded-lg bg-gray-700 text-white text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Enter your first name"
+            required
+          />
+        </div>
+        <div class="w-1/2">
+          <label for="lastName" class="block text-lg font-medium mb-3">Last Name</label>
+          <input
+            type="text"
+            id="lastName"
+            class="w-full px-5 py-3 rounded-lg bg-gray-700 text-white text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Enter your last name"
+            required
+          />
+        </div>
+      </div>
+      <div class="mb-6">
+        <label for="email" class="block text-lg font-medium mb-3">Email</label>
+        <input
+          type="email"
+          id="email"
+          class="w-full px-5 py-3 rounded-lg bg-gray-700 text-white text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Enter your email"
+          required
+        />
+      </div>
+      <div class="mb-6">
+        <label for="password" class="block text-lg font-medium mb-3">Password</label>
+        <input
+          type="password"
+          id="password"
+          class="w-full px-5 py-3 rounded-lg bg-gray-700 text-white text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Enter your password"
+          required
+        />
+      </div>
+      <div class="mb-6">
+        <label for="confirmPassword" class="block text-lg font-medium mb-3">Confirm Password</label>
+        <input
+          type="password"
+          id="confirmPassword"
+          class="w-full px-5 py-3 rounded-lg bg-gray-700 text-white text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="Confirm your password"
+          required
+        />
+      </div>
+      <div class="mb-6">
+        <label for="birthday" class="block text-lg font-medium mb-3">Birthday</label>
+        <input
+          type="date"
+          id="birthday"
+          class="w-full px-5 py-3 rounded-lg bg-gray-700 text-white text-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          required
+        />
+      </div>
+      <button
+        type="submit"
+        class="w-full bg-green-500 hover:bg-green-600 text-white px-5 py-3 rounded-lg text-lg font-medium"
+      >
+        Register
+      </button>
+    </form>
+    <p class="mt-6 text-center text-lg">
+      Already have an account? 
+      <a [routerLink]="'/login'" class="text-blue-500 hover:underline">Login</a>
+    </p>
+  </div>
+</div>
