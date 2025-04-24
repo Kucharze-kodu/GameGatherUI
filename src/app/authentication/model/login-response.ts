@@ -1,7 +1,7 @@
 export interface LoginResponse {
     id: number;
-    firstName: string;
-    lastName: string;
+    firstname: string;
+    lastname: string;
     email: string;
     token: string;
     tokenExpiresOnUtc: Date;

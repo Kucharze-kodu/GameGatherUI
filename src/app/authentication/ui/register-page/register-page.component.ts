@@ -1,10 +1,10 @@
 import { Component, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators, AbstractControl, ValidationErrors, FormGroup, ValidatorFn } from '@angular/forms';
-import { RouterModule } from '@angular/router';
+import { Router, RouterModule } from '@angular/router';
 import { RegisterRequest } from '../../model/register-request';
-import { HttpClient } from '@angular/common/http';
 import { AuthenticationService } from '../../data-access/authentication.service';
 import { ToastrService } from 'ngx-toastr';
+import { RegisterResponse } from '../../model/register-response';
 
 @Component({
   selector: 'app-register-page',
@@ -16,6 +16,7 @@ export class RegisterPageComponent {
   private formBuilder = inject(FormBuilder);
   private authenticationService = inject(AuthenticationService);
   private toastr = inject(ToastrService);
+  private router = inject(Router);
 
 
   registerRequest: RegisterRequest = {
@@ -73,14 +74,13 @@ export class RegisterPageComponent {
 
   
     this.authenticationService.register(this.registerRequest).subscribe({
-      next: (response) => {
+      next: (response: RegisterResponse) => {
         this.toastr.success('Registration successful!', 'Success');
-        console.log(response);
+        this.registerForm.reset();
+        this.router.navigate(['/verify-email'], { queryParams: { email: this.registerRequest.email} });
       }
       , error: (error) => {
         this.toastr.error(error.error.detail, 'Error');
-        
-        console.error(error);
       }
     });
    
