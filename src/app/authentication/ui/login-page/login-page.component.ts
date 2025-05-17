@@ -1,10 +1,10 @@
 import { Component, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterModule } from '@angular/router';
-import { LoginRequest } from '../../model/login-request';
+import { LoginRequest } from '../../model/login/login-request';
 import { AuthenticationService } from '../../data-access/authentication.service';
 import { ToastrService } from 'ngx-toastr';
-import { LoginResponse } from '../../model/login-response';
+import { LoginResponse } from '../../model/login/login-response';
 
 @Component({
   selector: 'app-login-page',

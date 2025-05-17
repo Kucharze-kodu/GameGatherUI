@@ -1,10 +1,10 @@
 import { Component, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators, AbstractControl, ValidationErrors, FormGroup, ValidatorFn } from '@angular/forms';
 import { Router, RouterModule } from '@angular/router';
-import { RegisterRequest } from '../../model/register-request';
+import { RegisterRequest } from '../../model/register/register-request';
 import { AuthenticationService } from '../../data-access/authentication.service';
 import { ToastrService } from 'ngx-toastr';
-import { RegisterResponse } from '../../model/register-response';
+import { RegisterResponse } from '../../model/register/register-response';
 
 @Component({
   selector: 'app-register-page',
@@ -25,7 +25,8 @@ export class RegisterPageComponent {
     email: '',
     password: '',
     confirmPassword: '',
-    birthday: new Date()
+    birthday: new Date(),
+    verifyEmailUrl: ''
   };
 
   registerForm = this.formBuilder.group({
@@ -69,7 +70,8 @@ export class RegisterPageComponent {
       email: this.registerForm.value.email ? this.registerForm.value.email : '',
       password: this.registerForm.value.password ? this.registerForm.value.password : '',
       confirmPassword: this.registerForm.value.confirmPassword ? this.registerForm.value.confirmPassword : '',
-      birthday: this.registerForm.value.birthday ? new Date(this.registerForm.value.birthday) : new Date()
+      birthday: this.registerForm.value.birthday ? new Date(this.registerForm.value.birthday) : new Date(),
+      verifyEmailUrl: window.location.origin + '/verify-email'
     }
 
   
