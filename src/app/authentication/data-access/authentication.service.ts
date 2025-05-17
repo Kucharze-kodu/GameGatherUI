@@ -6,6 +6,9 @@ import { HttpClient } from '@angular/common/http';
 import { RegisterRequest } from '../model/register-request';
 import { Observable } from 'rxjs';
 import { RegisterResponse } from '../model/register-response';
+import { LoginRequest } from '../model/login-request';
+import { VerifyEmailRequest } from '../model/verify-email-request';
+import { VerifyEmailResponse } from '../model/verify-email-response';
 
 @Injectable({
   providedIn: 'root'
@@ -55,7 +58,12 @@ export class AuthenticationService {
     return this.http.post<RegisterResponse>(this.apiUrl + "/register", registerRequest);
   }
 
-  login(loginRequest: { email: string, password: string }): Observable<LoginResponse> {
+  login(loginRequest: LoginRequest): Observable<LoginResponse> {
     return this.http.post<LoginResponse>(this.apiUrl + "/login", loginRequest);
+  }
+
+  verifyEmail(verifyEmailRequest: VerifyEmailRequest): Observable<VerifyEmailResponse> {
+    console.log("Url: ", window.location.origin);;
+    return this.http.post<VerifyEmailResponse>(this.apiUrl + "/verify-email", verifyEmailRequest);
   }
 }

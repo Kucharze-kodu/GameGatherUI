@@ -5,4 +5,5 @@ export interface RegisterRequest {
     password: string;
     confirmPassword: string;
     birthday: Date;
+    verifyEmailUrl: string;
 }
