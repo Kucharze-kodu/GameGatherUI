@@ -4,6 +4,7 @@ import { RegisterPageComponent } from './authentication/ui/register-page/registe
 import { VerifyEmailPageComponent } from './authentication/ui/verify-email-page/verify-email-page.component';
 import { HomePageComponent } from './ui/home-page/home-page.component';
 import { AuthenticationGuard } from './authentication/guards/authentication.guard';
+import { SessionGamePageComponent } from './session-game/ui/session-game-page/session-game-page.component';
 
 export const routes: Routes = [
     {
@@ -27,5 +28,11 @@ export const routes: Routes = [
         path: 'home',
         component: HomePageComponent,
         canActivate: [AuthenticationGuard]
+    },
+    { 
+        path: 'session-game',
+         component: SessionGamePageComponent,
+         canActivate :[AuthenticationGuard]
     }
 ];
+

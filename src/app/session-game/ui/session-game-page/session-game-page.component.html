@@ -1,0 +1,25 @@
+<div class="forum-layout">
+  <aside class="left-panel">
+
+    <div *ngIf="sessionData">
+      <h2>{{ sessionData.name }}</h2>
+      <p><strong>Mistrz gry:</strong> {{ sessionData.gameMasterName }}</p>
+      <p>{{ sessionData.description }}</p>
+
+      <h3>Gracze:</h3>
+      <ul>
+      <li *ngFor="let player of sessionData.playerName">{{ player }}</li>
+      </ul>
+      </div>
+
+  </aside>
+
+  <main class="center-panel">
+
+  </main>
+
+  <aside class="right-panel">
+    <h3>Posty</h3>
+    <div>Post 1</div>
+  </aside>
+</div>

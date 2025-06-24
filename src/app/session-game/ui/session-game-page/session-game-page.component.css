@@ -1,0 +1,23 @@
+.forum-layout {
+  display: flex;
+  height: 100vh;
+}
+
+.left-panel,
+.right-panel {
+  width: 20%;
+  padding: 1rem;
+  background-color: #f0f0f0;
+  overflow-y: auto;
+}
+
+.center-panel {
+  flex: 1;
+  padding: 1rem;
+  background-color: #ffffff;
+  overflow-y: auto;
+}
+
+h3 {
+  margin-top: 0;
+}
