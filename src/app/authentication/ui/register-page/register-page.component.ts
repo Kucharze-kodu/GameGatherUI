@@ -1,10 +1,10 @@
 import { Component, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators, AbstractControl, ValidationErrors, FormGroup, ValidatorFn } from '@angular/forms';
 import { Router, RouterModule } from '@angular/router';
-import { RegisterRequest } from '../../model/register-request';
+import { RegisterRequest } from '../../model/register/register-request';
 import { AuthenticationService } from '../../data-access/authentication.service';
 import { ToastrService } from 'ngx-toastr';
-import { RegisterResponse } from '../../model/register-response';
+import { RegisterResponse } from '../../model/register/register-response';
 
 @Component({
   selector: 'app-register-page',
