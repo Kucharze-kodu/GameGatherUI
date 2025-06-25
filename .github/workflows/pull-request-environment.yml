@@ -1,0 +1,221 @@
+name: Create pull request environment - GameGatherUI
+
+on:
+  pull_request:
+    types: [reopened, opened, synchronize, edited, closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write 
+
+jobs:
+  build:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    environment:
+      name: "Development"
+      url: ${{ steps.terraform_output.outputs.static_webapp_url }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Check Angular project name
+        id: project-name
+        run: |
+          # Odczytaj nazwę projektu z angular.json
+          PROJECT_NAME=$(cat angular.json | jq -r '.defaultProject // ""')
+          
+          # Jeśli nie ma defaultProject, spróbuj pobrać pierwszy projekt
+          if [[ -z "$PROJECT_NAME" || "$PROJECT_NAME" == "null" ]]; then
+            PROJECT_NAME=$(cat angular.json | jq -r 'keys | .[] | select(. != "version" and . != "$schema")' | head -n 1)
+          fi
+          
+          echo "Angular project name detected as: $PROJECT_NAME"
+          echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create environment files
+        run: |
+          mkdir -p src/environments
+
+          # Set environment variables
+          API_URL="${{ vars.AZURE_BACKEND_URL }}"
+          echo "API URL: $API_URL"
+          
+          # Create environment.ts (production)
+          echo "export const environment = {" > src/environments/environment.ts
+          echo "  production: true," >> src/environments/environment.ts
+          echo "  apiUrl: '$API_URL'," >> src/environments/environment.ts
+          echo "};" >> src/environments/environment.ts
+
+          # Display the created environment file
+          echo "Generated environment.ts:"
+          cat src/environments/environment.ts
+    
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Angular application
+        run: npm run build -- --configuration production
+    
+      - name: List build output
+        run: |
+          echo "Dist directory contents:"
+          ls -la ./dist
+          echo "Project name from previous step: ${{ steps.project-name.outputs.project_name }}"
+          
+          # Dodatkowe sprawdzenie wygenerowanych plików
+          if [ -d "./dist/${{ steps.project-name.outputs.project_name }}" ]; then
+            echo "Found project subdirectory in dist:"
+            ls -la "./dist/${{ steps.project-name.outputs.project_name }}"
+          else
+            echo "Using root dist directory for artifact"
+          fi
+    
+      - name: Upload Angular artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: angular-app
+          path: |
+            ./dist/${{ steps.project-name.outputs.project_name }}
+            ./dist/*
+          if-no-files-found: error
+
+
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: "Development"
+      url: ${{ steps.deploy-ui.outputs.static_web_app_url }}
+    needs: build
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+
+    steps:       
+    
+      - name: Download Angular artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: angular-app
+          path: ./app-artifacts
+        
+      - name: Find path to index.html
+        id: find-index
+        run: |
+          # echo "Downloaded artifact contents:"
+          # ls -la ./app-artifacts
+          
+          # Znajdź plik index.html
+          INDEX_PATH=$(find ./app-artifacts -name "index.html" | head -n 1)
+          
+          # if [ -z "$INDEX_PATH" ]; then
+          #   echo "❌ ERROR: index.html not found in artifacts!"
+          #   find ./app-artifacts -type f | head -n 20
+          #   exit 1
+          # fi
+          
+          # Pobierz katalog zawierający index.html
+          INDEX_DIR=$(dirname "$INDEX_PATH")
+          echo "✅ Found index.html in: $INDEX_DIR"
+          
+          # Zapisz jako zmienną wyjściową
+          echo "index_dir=$INDEX_DIR" >> $GITHUB_OUTPUT
+    
+      - name: Deploy UI to Static Web App
+        id: deploy-ui
+        env:
+          DEPLOYMENT_PROVIDER: "Custom"
+          REPOSITORY_URL: ${{ github.event.repository.html_url }}
+          BRANCH: ${{ github.event.pull_request.head.ref }} 
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_PRODUCTION_WEBAPP_TOKEN }}
+          repo_token: ${{ github.token }}
+          action: "upload"
+          app_location: "${{ steps.find-index.outputs.index_dir }}"
+          skip_app_build: true
+          output_location: ""
+          deployment_environment: dev
+      
+      - name: Get Preview Environment URL
+        id: get-preview-url
+        run: |
+          echo "Logging in to Azure..."
+          az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} --output none
+
+          echo "Fetching preview environment URL..."
+          STATIC_WEB_APP_NAME="${{ vars.AZURE_STATIC_WEB_APP_NAME }}"
+          ENVIRONMENT_NAME="dev"
+
+          # Pobierz URL środowiska `dev`
+          PREVIEW_URL=$(az staticwebapp environment list \
+            --name $STATIC_WEB_APP_NAME \
+            --query "[?name=='$ENVIRONMENT_NAME'].hostname" \
+            -o tsv)
+
+          if [ -z "$PREVIEW_URL" ]; then
+            echo "❌ ERROR: Preview environment URL not found for environment '$ENVIRONMENT_NAME'"
+            exit 1
+          fi
+
+          echo "Preview Environment URL: $PREVIEW_URL"
+          echo "preview_url=$PREVIEW_URL" >> $GITHUB_OUTPUT
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && github.event.action != 'closed'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const staticWebAppUrl = `${{ steps.get-preview-url.outputs.preview_url }}`;
+            const apiUrl = `${{ vars.AZURE_BACKEND_URL }}`;
+
+            const commentBody = `
+            ### Environment Created
+            The environment for this pull request has been created successfully.
+            
+            - **Frontend URL**: [http://${staticWebAppUrl}](http://${staticWebAppUrl})     
+            - **API URL**: [${apiUrl}](${apiUrl})
+            `;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+      - name: Logout from Azure
+        run: |
+          echo "Logging out from Azure..."
+          az logout 
+
+
+  close_pull_request:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    environment:
+      name: "Development"
+
+    steps:
+      - name: Login to Azure
+        run: |
+            echo "Logging in to Azure..."
+            az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} --output none
+
+      - name: Close pull request environment
+        if: github.event.action == 'closed'
+        run: |
+          echo "Closing pull request environment..."
+          az staticwebapp environment delete --name ${{ vars.AZURE_STATIC_WEB_APP_NAME }} --environment "dev" --yes
+          echo "Pull request environment closed."
+
+      - name: Logout from Azure
+        run: |
+          echo "Logging out from Azure..."
+          az logout

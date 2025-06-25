@@ -1,0 +1,155 @@
+name: Continuous Deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: "Production"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Check Angular project name
+        id: project-name
+        run: |
+          # Read project name from angular.json
+          PROJECT_NAME=$(cat angular.json | jq -r '.defaultProject // ""')
+          
+          # If defaultProject is not defined, try to get the first project
+          if [[ -z "$PROJECT_NAME" || "$PROJECT_NAME" == "null" ]]; then
+            PROJECT_NAME=$(cat angular.json | jq -r 'keys | .[] | select(. != "version" and . != "$schema")' | head -n 1)
+          fi
+          
+          echo "Angular project name detected as: $PROJECT_NAME"
+          echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
+      
+
+      - name: Create environment files
+        run: |
+          mkdir -p src/environments
+          
+          # Set environment variables
+          API_URL="${{ vars.AZURE_BACKEND_URL }}"
+          echo "API URL: $API_URL"
+          
+          # Create environment.ts (production)
+          echo "export const environment = {" > src/environments/environment.ts
+          echo "  production: true," >> src/environments/environment.ts         
+          echo "  apiUrl: '$API_URL'," >> src/environments/environment.ts
+          echo "};" >> src/environments/environment.ts
+
+          # Display the created environment file
+          echo "Generated environment.ts:"
+          cat src/environments/environment.ts
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build the project
+        run: npm run build --configuration=production
+
+      - name: List build output
+        run: |
+          echo "Dist directory contents:"
+          ls -la ./dist
+          echo "Project name from previous step: ${{ steps.project-name.outputs.project_name }}"
+          
+          # Check generated files
+          if [ -d "./dist/${{ steps.project-name.outputs.project_name }}" ]; then
+            echo "Found project subdirectory in dist:"
+            ls -la "./dist/${{ steps.project-name.outputs.project_name }}"
+          else
+            echo "Using root dist directory for artifact"
+          fi
+
+      - name: Upload Angular artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: angular-app-prod
+          # If project subdirectory exists, use it
+          path: |
+            ./dist/${{ steps.project-name.outputs.project_name }}
+            ./dist/*
+          if-no-files-found: error
+
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: "Production"
+    needs: build
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        run: |
+          echo "Logging in to Azure..."
+          az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} --output none
+
+      - name: Download Angular production artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: angular-app-prod
+          path: ./app-artifacts
+          
+      - name: Find path to index.html
+        id: find-index
+        run: |
+          echo "Downloaded artifact contents:"
+          ls -la ./app-artifacts
+          
+          # Find index.html file
+          INDEX_PATH=$(find ./app-artifacts -name "index.html" | head -n 1)
+          
+          if [ -z "$INDEX_PATH" ]; then
+            echo "❌ ERROR: index.html not found in artifacts!"
+            find ./app-artifacts -type f | head -n 20
+            exit 1
+          fi
+          
+          # Get directory containing index.html
+          INDEX_DIR=$(dirname "$INDEX_PATH")
+          echo "✅ Found index.html in: $INDEX_DIR"
+          
+          # Save as output variable
+          echo "index_dir=$INDEX_DIR" >> $GITHUB_OUTPUT
+    
+      - name: Get Static Web App deployment token
+        id: get-token
+        run: |
+          # Get deployment token
+          appName="${{ vars.AZURE_STATIC_WEB_APP_NAME }}"
+          deploymentToken=$(az staticwebapp secrets list --name "$appName" --query "properties.apiKey" -o tsv)
+          
+          # Set output without exposing token in logs
+          echo "::add-mask::$deploymentToken"
+          echo "deployment_token=$deploymentToken" >> $GITHUB_OUTPUT
+    
+      - name: Deploy UI to Static Web App
+        uses: Azure/static-web-apps-deploy@1a947af9992250f3bc2e68ad0754c0b0c11566c9
+        with:
+          azure_static_web_apps_api_token: ${{ steps.get-token.outputs.deployment_token }}
+          repo_token: ${{ github.token }}
+          action: "upload"
+          app_location: "${{ steps.find-index.outputs.index_dir }}"
+          skip_app_build: true
+          output_location: ""
+
+      - name: Logout from Azure
+        run: |
+          echo "Logging out from Azure..."
+          az logout

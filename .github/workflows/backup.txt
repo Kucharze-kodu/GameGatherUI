@@ -1,0 +1,800 @@
+name: Create pull request environment - GameGatherUI
+
+on:
+  pull_request:
+    types: [reopened, opened, synchronize, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read      # Reduced from write because we don't create releases anymore
+  id-token: write     # Required for Azure OIDC
+  pull-requests: write # Required for commenting on PRs
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: "Development"
+      url: ${{ steps.terraform_output.outputs.static_webapp_url }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Check Angular project name
+        id: project-name
+        run: |
+          # Odczytaj nazwę projektu z angular.json
+          PROJECT_NAME=$(cat angular.json | jq -r '.defaultProject // ""')
+          
+          # Jeśli nie ma defaultProject, spróbuj pobrać pierwszy projekt
+          if [[ -z "$PROJECT_NAME" || "$PROJECT_NAME" == "null" ]]; then
+            PROJECT_NAME=$(cat angular.json | jq -r 'keys | .[] | select(. != "version" and . != "$schema")' | head -n 1)
+          fi
+          
+          echo "Angular project name detected as: $PROJECT_NAME"
+          echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create environment files
+        run: |
+          mkdir -p src/environments
+
+          # Set environment variables
+          API_URL="${{ vars.AZURE_BACKEND_URL }}"
+          echo "API URL: $API_URL"
+          
+          # Create environment.ts (production)
+          echo "export const environment = {" > src/environments/environment.ts
+          echo "  production: true," >> src/environments/environment.ts
+          echo "  apiUrl: '$API_URL'," >> src/environments/environment.ts
+          echo "};" >> src/environments/environment.ts
+
+          # Display the created environment file
+          echo "Generated environment.ts:"
+          cat src/environments/environment.ts
+    
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Angular application
+        run: npm run build -- --configuration production
+    
+      - name: List build output
+        run: |
+          echo "Dist directory contents:"
+          ls -la ./dist
+          echo "Project name from previous step: ${{ steps.project-name.outputs.project_name }}"
+          
+          # Dodatkowe sprawdzenie wygenerowanych plików
+          if [ -d "./dist/${{ steps.project-name.outputs.project_name }}" ]; then
+            echo "Found project subdirectory in dist:"
+            ls -la "./dist/${{ steps.project-name.outputs.project_name }}"
+          else
+            echo "Using root dist directory for artifact"
+          fi
+    
+      - name: Upload Angular artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: angular-app
+          path: |
+            ./dist/${{ steps.project-name.outputs.project_name }}
+            ./dist/*
+          if-no-files-found: error
+
+  terraform:
+    if: github.event_name != 'pull_request' && github.event.action != 'closed'
+    defaults:
+      run:
+        working-directory: ./terraform/pr_infrastructure
+    runs-on: ubuntu-latest
+    environment:
+      name: "Development"
+      url: ${{ steps.terraform_output.outputs.webapp_publish_url }}
+    needs: build
+    outputs:
+      # webapp_name: ${{ steps.terraform_output.outputs.webapp_name }}
+      # resource_group_name: ${{ steps.terraform_output.outputs.resource_group_name }}
+      # webapp_url: ${{ steps.terraform_output.outputs.webapp_publish_url }}
+      static_webapp_name: ${{ steps.terraform_output.outputs.static_webapp_name }}
+      static_webapp_url: ${{ steps.terraform_output.outputs.static_webapp_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3.1.2
+
+      # - name: Terraform Format
+      #   id: fmt
+      #   run: terraform fmt 
+        
+      - name: Terraform Init
+        id: init
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ secrets.AZURE_STORAGE_RESOURCE_GROUP_NAME }}" \
+            -backend-config="storage_account_name=${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" \
+            -backend-config="container_name=${{ secrets.AZURE_CONTAINER_NAME }}" \
+            -backend-config="key=${{ secrets.AZURE_KEY }}"
+
+      # - name: Terraform Validate
+      #   id: validate
+      #   run: terraform validate
+
+      # - name: Terraform Plan
+      #   id: plan
+      #   env:
+      #     ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      #     ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      #     ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      #     ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      #   run: terraform plan -no-color -input=false
+      #   continue-on-error: true
+
+      # - uses: actions/github-script@v6
+      #   if: github.event_name == 'pull_request'
+      #   env:
+      #     PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
+      #   with:
+      #     github-token: ${{ github.token }}
+      #     script: |
+      #       // 1. Retrieve existing bot comments for the PR
+      #       const { data: comments } = await github.rest.issues.listComments({
+      #         owner: context.repo.owner,
+      #         repo: context.repo.repo,
+      #         issue_number: context.issue.number,
+      #       })
+      #       const botComment = comments.find(comment => {
+      #         return comment.user.type === 'Bot' && comment.body.includes('Terraform Format and Style')
+      #       })
+
+      #       // 2. Prepare format of the comment
+      #       const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+      #       #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
+      #       #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
+      #       <details><summary>Validation Output</summary>
+
+      #       \`\`\`\n
+      #       ${{ steps.validate.outputs.stdout }}
+      #       \`\`\`
+
+      #       </details>
+
+      #       #### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
+
+      #       <details><summary>Show Plan</summary>
+
+      #       \`\`\`\n
+      #       ${process.env.PLAN}
+      #       \`\`\`
+
+      #       </details>
+
+      #       *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Working Directory: \`${{ env.tf_actions_working_dir }}\`, Workflow: \`${{ github.workflow }}\`*`;
+
+      #       // 3. If we have a comment, update it, otherwise create a new one
+      #       if (botComment) {
+      #         github.rest.issues.updateComment({
+      #           owner: context.repo.owner,
+      #           repo: context.repo.repo,
+      #           comment_id: botComment.id,
+      #           body: output
+      #         })
+      #       } else {
+      #         github.rest.issues.createComment({
+      #           issue_number: context.issue.number,
+      #           owner: context.repo.owner,
+      #           repo: context.repo.repo,
+      #           body: output
+      #         })
+      #       }
+          
+      - name: Terraform Apply
+        id: apply
+        run: terraform apply -auto-approve -no-color -input=false 
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_USE_AZUREAD: true
+          
+      - name: Terraform Output
+        id: terraform_output
+        run: |
+          # echo "webapp_name=$(terraform output -raw webapp_name)" >> $GITHUB_OUTPUT
+          # echo "resource_group_name=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
+          # echo "webapp_publish_url=$(terraform output -raw webapp_publish_url)" >> $GITHUB_OUTPUT
+          echo "static_webapp_name=$(terraform output -raw static_webapp_name)" >> $GITHUB_OUTPUT
+          echo "static_webapp_url=$(terraform output -raw static_webapp_url)" >> $GITHUB_OUTPUT
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+  # download-backend-artifact:
+  #   if: github.event_name == 'pull_request' && github.event.action != 'closed'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Get latest backend release
+  #       id: get-latest-release
+  #       uses: actions/github-script@v7
+  #       with:
+  #         github-token: ${{ secrets.TOKEN_PAT }}
+  #         script: |
+  #           try {
+  #             // Get list of releases from backend repository
+  #             console.log("Fetching releases from tempGameGather repository...");
+  #             const releases = await github.rest.repos.listReleases({
+  #               owner: context.repo.owner,
+  #               repo: 'tempGameGather',
+  #               per_page: 10
+  #             });
+              
+  #             if (releases.data.length === 0) {
+  #               console.log("No releases found in backend repository!");
+  #               return { found: false };
+  #             }
+              
+  #             // Find the latest release (first in list)
+  #             const latestRelease = releases.data[0];
+  #             console.log(`Found latest release: ${latestRelease.name}, tag: ${latestRelease.tag_name}`);
+              
+  #             // Find zip asset
+  #             const zipAsset = latestRelease.assets.find(asset => 
+  #               asset.name.endsWith('.zip') || asset.name === 'gamegather-app.zip'
+  #             );
+              
+  #             if (!zipAsset) {
+  #               console.log("No zip asset found in the latest release!");
+  #               return { found: false };
+  #             }
+              
+  #             console.log(`Found zip asset: ${zipAsset.name}, download URL: ${zipAsset.browser_download_url}, ID: ${zipAsset.id}`);
+              
+  #             return { 
+  #               found: true, 
+  #               url: zipAsset.browser_download_url,
+  #               release_name: latestRelease.name,
+  #               tag_name: latestRelease.tag_name,
+  #               asset_id: zipAsset.id,
+  #               asset_name: zipAsset.name
+  #             };
+  #           } catch (error) {
+  #             console.error(`Error fetching releases: ${error.message}`);
+  #             return { found: false };
+  #           }
+      
+  #     - name: Install GitHub CLI
+  #       if: fromJSON(steps.get-latest-release.outputs.result).found
+  #       run: |
+  #         type -p gh &>/dev/null || {
+  #           echo "GitHub CLI not found. Installing..."
+  #           curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+  #           echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+  #           sudo apt update
+  #           sudo apt install gh
+  #         }
+          
+  #         echo "GitHub CLI version:"
+  #         gh --version
+    
+  #     - name: Download backend artifact with GitHub CLI
+  #       if: fromJSON(steps.get-latest-release.outputs.result).found
+  #       run: |
+  #         mkdir -p ./backend
+  #         RELEASE_NAME=$(echo '${{ steps.get-latest-release.outputs.result }}' | jq -r '.release_name')
+  #         TAG_NAME=$(echo '${{ steps.get-latest-release.outputs.result }}' | jq -r '.tag_name')
+  #         ASSET_NAME=$(echo '${{ steps.get-latest-release.outputs.result }}' | jq -r '.asset_name')
+          
+  #         echo "Downloading asset '$ASSET_NAME' from release $RELEASE_NAME (tag: $TAG_NAME)..."
+          
+  #         # Login to GitHub CLI with token
+  #         echo "${{ secrets.TOKEN_PAT }}" | gh auth login --with-token
+          
+  #         # Download release file using GitHub CLI
+  #         gh release download "$TAG_NAME" -R "$GITHUB_REPOSITORY_OWNER/tempGameGather" -p "$ASSET_NAME" -O ./backend/backend.zip
+          
+  #         # Check if download succeeded
+  #         if [ -f ./backend/backend.zip ]; then
+  #           echo "File downloaded, checking size and content:"
+  #           ls -la ./backend/backend.zip
+  #           file ./backend/backend.zip
+            
+  #           FILE_SIZE=$(stat -c %s ./backend/backend.zip)
+  #           if [ "$FILE_SIZE" -lt 1000 ]; then
+  #             echo "ERROR: Downloaded file is too small ($FILE_SIZE bytes)"
+  #             echo "File content:"
+  #             cat ./backend/backend.zip
+  #             exit 1
+  #           else
+  #             echo "Successfully downloaded backend artifact ($FILE_SIZE bytes)"
+  #             echo "BACKEND_RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV 
+  #             echo "BACKEND_TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+  #           fi
+  #         else
+  #           echo "Failed to download backend artifact"
+  #           exit 1
+  #         fi
+      
+  #     - name: Upload backend artifact for deployment
+  #       if: fromJSON(steps.get-latest-release.outputs.result).found
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: backend-zip
+  #         path: ./backend/backend.zip
+
+  # deploy-backend:
+  #   runs-on: ubuntu-latest
+  #   needs: [download-backend-artifact, terraform]
+  #   if: github.event_name == 'pull_request' && github.event.action != 'closed'
+  #   steps:
+  #     - name: Login to Azure
+  #       run: |
+  #         az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} --output none
+    
+  #     - name: Download backend artifact
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: backend-zip
+  #         path: ./backend
+    
+  #     # Added step to extract ZIP artifact
+  #     - name: Extract backend artifact
+  #       run: |
+  #         # File information
+  #         echo "Downloaded ZIP file information:"
+  #         ls -la ./backend
+  #         file ./backend/backend.zip
+          
+  #         # Create extraction directory
+  #         mkdir -p ./extracted
+          
+  #         # Extract archive
+  #         echo "Extracting ZIP file..."
+  #         unzip -o ./backend/backend.zip -d ./extracted
+          
+  #         # Show extracted contents
+  #         echo "Extracted backend folder contents:"
+  #         ls -la ./extracted
+          
+  #         # Check file structure
+  #         echo "Extracted artifact file structure:"
+  #         find ./extracted -type f | grep -E '\.(dll|json|config)$' | head -n 10
+          
+  #         # Verify extraction succeeded
+  #         if [ $(find ./extracted -type f | wc -l) -gt 0 ]; then
+  #           echo "Backend artifact successfully extracted"
+  #         else
+  #           echo "ERROR: Extraction failed - extracted directory is empty"
+  #           exit 1
+  #         fi
+    
+  #     - name: Deploy backend to Azure Web App
+  #       id: deploy-backend
+  #       uses: azure/webapps-deploy@v3
+  #       with:
+  #         app-name: ${{ needs.terraform.outputs.webapp_name }}
+  #         resource-group-name: ${{ needs.terraform.outputs.resource_group_name }}
+  #         # Use extracted folder
+  #         package: ./extracted
+
+  
+
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: "Development"
+      url: ${{ steps.terraform_output.outputs.static_webapp_url }}
+    # needs: terraform
+    needs: build
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    steps:        
+      - name: Login to Azure
+        run: |
+          az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} --output none
+    
+      - name: Download Angular artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: angular-app
+          path: ./app-artifacts
+        
+      - name: Find path to index.html
+        id: find-index
+        run: |
+          echo "Downloaded artifact contents:"
+          ls -la ./app-artifacts
+          
+          # Znajdź plik index.html
+          INDEX_PATH=$(find ./app-artifacts -name "index.html" | head -n 1)
+          
+          if [ -z "$INDEX_PATH" ]; then
+            echo "❌ ERROR: index.html not found in artifacts!"
+            find ./app-artifacts -type f | head -n 20
+            exit 1
+          fi
+          
+          # Pobierz katalog zawierający index.html
+          INDEX_DIR=$(dirname "$INDEX_PATH")
+          echo "✅ Found index.html in: $INDEX_DIR"
+          
+          # Zapisz jako zmienną wyjściową
+          echo "index_dir=$INDEX_DIR" >> $GITHUB_OUTPUT
+    
+      # - name: Get Static Web App deployment token
+      #   id: get-token
+      #   run: |
+      #     # az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} --output none
+          
+      #     # Get deployment token
+      #     appName="${{ needs.terraform.outputs.static_webapp_name }}"
+      #     deploymentToken=$(az staticwebapp secrets list --name "$appName" --query "properties.apiKey" -o tsv)
+          
+      #     # Set output without exposing token in logs
+      #     echo "::add-mask::$deploymentToken"
+      #     echo "deployment_token=$deploymentToken" >> $GITHUB_OUTPUT
+    
+      - name: Deploy UI to Static Web App
+        uses: Azure/static-web-apps-deploy@1a947af9992250f3bc2e68ad0754c0b0c11566c9
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_PRODUCTION_WEBAPP_TOKEN }}
+          repo_token: ${{ github.token }}
+          action: "upload"
+          app_location: "${{ steps.find-index.outputs.index_dir }}"
+          skip_app_build: true
+          output_location: ""
+          deployment_environment: "Production"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && github.event.action != 'closed'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const commentBody = `
+            ### Environment Created
+            The environment for this pull request has been created successfully.
+            
+            - **Static Web App Name**: \`${{ needs.terraform.outputs.static_webapp_name }}\`
+            - **Static Web App URL**: [${{ needs.terraform.outputs.static_webapp_url }}](${{ needs.terraform.outputs.static_webapp_url }})
+            `;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+      - name: Logout from Azure
+        run: |
+          echo "Logging out from Azure..."
+          az logout 
+
+
+  close_pull_request:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    name: Close Pull Request
+    steps:
+      - name: Close Pull Request
+        uses: Azure/static-web-apps-deploy@1a947af9992250f3bc2e68ad0754c0b0c11566c9
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_PRODUCTION_WEBAPP_TOKEN }}
+          action: "close"
+
+
+---------------------------------------------------------------------------------------------------------
+
+name: Destroy pull request environment - GameGatherUI
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  actions: read
+
+
+jobs:
+  destroy:
+    defaults:
+      run:
+        working-directory: ./terraform
+    runs-on: ubuntu-latest
+    environment:
+      name: "Development"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3.1.2
+
+      # - name: Terraform Format
+      #   id: fmt
+      #   run: terraform fmt 
+        
+      - name: Terraform Init
+        id: init
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          echo "##[group]Terraform Init"
+          echo "Initializing Terraform..."
+          
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ secrets.AZURE_STORAGE_RESOURCE_GROUP_NAME }}" \
+            -backend-config="storage_account_name=${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" \
+            -backend-config="container_name=${{ secrets.AZURE_CONTAINER_NAME }}" \
+            -backend-config="key=${{ secrets.AZURE_KEY }}"
+
+      # - name: Terraform Validate
+      #   id: validate
+      #   run: terraform validate
+
+      - name: Terraform Destroy
+        id: destroy
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: terraform destroy -auto-approve
+
+  # terraform_prod:
+  #   if: github.event.pull_request.merged == true
+  #   needs: destroy
+  #   runs-on: ubuntu-latest
+  #   defaults:
+  #     run:
+  #       working-directory: ./terraform
+  #   outputs:
+  #     static_webapp_name: ${{ steps.terraform_output.outputs.static_webapp_name }}
+  #     static_webapp_url: ${{ steps.terraform_output.outputs.static_webapp_url }}
+  #     resource_group_name: ${{ steps.terraform_output.outputs.resource_group_name }}
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+
+  #     - name: Setup Terraform
+  #       uses: hashicorp/setup-terraform@v3.1.2
+
+  #     - name: Terraform Format
+  #       id: fmt
+  #       run: terraform fmt 
+        
+  #     - name: Terraform Init
+  #       id: init
+  #       env:
+  #         ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  #         ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  #         ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  #         ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  #       run: |
+  #         echo "##[group]Terraform Init"
+  #         echo "Initializing Terraform..."
+          
+  #         terraform init -input=false \
+  #           -backend-config="resource_group_name=${{ secrets.AZURE_RESOURCE_GROUP_NAME_PROD }}" \
+  #           -backend-config="storage_account_name=${{ secrets.AZURE_STORAGE_ACCOUNT_NAME_PROD }}" \
+  #           -backend-config="container_name=${{ secrets.AZURE_CONTAINER_NAME_PROD }}" \
+  #           -backend-config="key=${{ secrets.AZURE_KEY_PROD }}"
+
+  #     - name: Terraform Validate
+  #       id: validate
+  #       run: terraform validate
+
+  #     - name: Terraform Plan
+  #       id: plan
+  #       env:
+  #         ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  #         ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  #         ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  #         ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  #       run: terraform plan -no-color -input=false
+
+  #     - name: Terraform Apply
+  #       id: apply
+  #       run: terraform apply -auto-approve -no-color -input=false 
+  #       env:
+  #         ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  #         ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  #         ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  #         ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  #         ARM_USE_AZUREAD: true    
+
+  #     - name: Terraform Output
+  #       id: terraform_output
+  #       run: |
+  #         echo "static_webapp_name=$(terraform output -raw static_webapp_name)" >> $GITHUB_OUTPUT
+  #         echo "static_webapp_url=$(terraform output -raw static_webapp_url)" >> $GITHUB_OUTPUT
+  #         echo "resource_group_name=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
+  #       env:
+  #         ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  #         ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  #         ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  #         ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+  # # Job to build Angular application with production API URL
+  # build-angular-prod:
+  #   if: github.event.pull_request.merged == true
+  #   needs: [terraform_prod]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+      
+  #     # Setup Node.js for Angular
+  #     - name: Setup Node.js
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '20'
+  #         cache: 'npm'
+      
+  #     # Check Angular project name
+  #     - name: Check Angular project name
+  #       id: project-name
+  #       run: |
+  #         # Read project name from angular.json
+  #         PROJECT_NAME=$(cat angular.json | jq -r '.defaultProject // ""')
+          
+  #         # If defaultProject is not defined, try to get the first project
+  #         if [[ -z "$PROJECT_NAME" || "$PROJECT_NAME" == "null" ]]; then
+  #           PROJECT_NAME=$(cat angular.json | jq -r 'keys | .[] | select(. != "version" and . != "$schema")' | head -n 1)
+  #         fi
+          
+  #         echo "Angular project name detected as: $PROJECT_NAME"
+  #         echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
+      
+  #     # Create environment files with production API address
+  #     - name: Create environment files
+  #       run: |
+  #         mkdir -p src/environments
+          
+  #         # Create environment.ts (production)
+  #         echo "export const environment = {" > src/environments/environment.ts
+  #         echo "  production: true," >> src/environments/environment.ts
+  #         echo "  apiUrl: 'https://gamegather-api-webapp.azurewebsites.net/api'," >> src/environments/environment.ts
+  #         echo "};" >> src/environments/environment.ts
+      
+  #     # Install dependencies
+  #     - name: Install dependencies
+  #       run: npm ci
+      
+  #     # Build Angular application
+  #     - name: Build Angular application
+  #       run: npm run build --configuration=production
+      
+  #     # List build output
+  #     - name: List build output
+  #       run: |
+  #         echo "Dist directory contents:"
+  #         ls -la ./dist
+  #         echo "Project name from previous step: ${{ steps.project-name.outputs.project_name }}"
+          
+  #         # Check generated files
+  #         if [ -d "./dist/${{ steps.project-name.outputs.project_name }}" ]; then
+  #           echo "Found project subdirectory in dist:"
+  #           ls -la "./dist/${{ steps.project-name.outputs.project_name }}"
+  #         else
+  #           echo "Using root dist directory for artifact"
+  #         fi
+      
+  #     # Upload Angular build artifact
+  #     - name: Upload Angular artifact
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: angular-app-prod
+  #         # If project subdirectory exists, use it
+  #         path: |
+  #           ./dist/${{ steps.project-name.outputs.project_name }}
+  #           ./dist/*
+  #         if-no-files-found: error
+
+  # deploy:
+  #   if: github.event.pull_request.merged == true
+  #   needs: [terraform_prod, build-angular-prod]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+        
+  #     - name: Login to Azure
+  #       run: |
+  #         echo "Logging in to Azure..."
+  #         az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }} --output none
+
+  #     # Download our newly built artifact
+  #     - name: Download Angular production artifact
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: angular-app-prod
+  #         path: ./app-artifacts
+          
+  #     # Find path to index.html
+  #     - name: Find path to index.html
+  #       id: find-index
+  #       run: |
+  #         echo "Downloaded artifact contents:"
+  #         ls -la ./app-artifacts
+          
+  #         # Find index.html file
+  #         INDEX_PATH=$(find ./app-artifacts -name "index.html" | head -n 1)
+          
+  #         if [ -z "$INDEX_PATH" ]; then
+  #           echo "❌ ERROR: index.html not found in artifacts!"
+  #           find ./app-artifacts -type f | head -n 20
+  #           exit 1
+  #         fi
+          
+  #         # Get directory containing index.html
+  #         INDEX_DIR=$(dirname "$INDEX_PATH")
+  #         echo "✅ Found index.html in: $INDEX_DIR"
+          
+  #         # Save as output variable
+  #         echo "index_dir=$INDEX_DIR" >> $GITHUB_OUTPUT
+    
+  #     # Get deployment token
+  #     - name: Get Static Web App deployment token
+  #       id: get-token
+  #       run: |
+  #         # Get deployment token
+  #         appName="${{ needs.terraform_prod.outputs.static_webapp_name }}"
+  #         deploymentToken=$(az staticwebapp secrets list --name "$appName" --query "properties.apiKey" -o tsv)
+          
+  #         # Set output without exposing token in logs
+  #         echo "::add-mask::$deploymentToken"
+  #         echo "deployment_token=$deploymentToken" >> $GITHUB_OUTPUT
+    
+  #     # Use the official action with dynamic app_location
+  #     - name: Deploy UI to Static Web App
+  #       uses: Azure/static-web-apps-deploy@1a947af9992250f3bc2e68ad0754c0b0c11566c9
+  #       with:
+  #         azure_static_web_apps_api_token: ${{ steps.get-token.outputs.deployment_token }}
+  #         repo_token: ${{ github.token }}
+  #         action: "upload"
+  #         app_location: "${{ steps.find-index.outputs.index_dir }}"
+  #         skip_app_build: true
+  #         output_location: ""
+
+  #     - name: Add deployment comment to PR
+  #       uses: actions/github-script@v6
+  #       with:
+  #         github-token: ${{ github.token }}
+  #         script: |
+  #           const prNumber = context.payload.pull_request?.number;
+  #           if (!prNumber) return;
+            
+  #           github.rest.issues.createComment({
+  #             issue_number: prNumber,
+  #             owner: context.repo.owner,
+  #             repo: context.repo.repo,
+  #             body: `#### 🚀 Production UI deployment successful!
+              
+  #             Frontend has been successfully deployed to production environment.
+              
+  #             *Deployed by: @${context.actor} after merging PR #${prNumber}*`
+  #           });
+
+  #     - name: Logout from Azure
+  #       run: |
+  #         az logout
